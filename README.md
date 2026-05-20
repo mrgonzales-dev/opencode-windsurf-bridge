@@ -47,57 +47,40 @@ Add the following to your Opencode config (typically `~/.config/opencode/config.
         "baseURL": "http://127.0.0.1:42100/v1"
       },
       "models": {
-        "claude-4.5-opus-thinking": {
-          "name": "Claude 4.5 Opus Thinking (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
-        },
-        "gpt-5.1-codex-max": {
-          "name": "GPT 5.1 Codex Max (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          },
+        "claude-opus-4.7": {
+          "name": "Claude Opus 4.7 (Windsurf)",
+          "limit": { "context": 1000000, "output": 128000 },
           "variants": {
-            "low": {},
-            "medium": {},
-            "high": {}
+            "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
+            "low-fast": {}, "medium-fast": {}, "high-fast": {}, "xhigh-fast": {}, "max-fast": {}
           }
         },
-        "gemini-3.0-pro": {
-          "name": "Gemini 3.0 Pro (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          },
+        "gpt-5.5": {
+          "name": "GPT 5.5 (Windsurf)",
+          "limit": { "context": 1050000, "output": 128000 },
           "variants": {
-            "minimal": {},
-            "low": {},
-            "medium": {},
-            "high": {}
+            "none": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {},
+            "none-priority": {}, "low-priority": {}, "medium-priority": {}, "high-priority": {}, "xhigh-priority": {}
           }
         },
-        "minimax-m2.1": {
-          "name": "Minimax M2.1 (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
+        "deepseek-v4": {
+          "name": "DeepSeek V4 (Windsurf)",
+          "limit": { "context": 1000000, "output": 384000 }
         },
-        "glm-4.7": {
-          "name": "GLM 4.7 (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
+        "kimi-k2.6": {
+          "name": "Kimi K2.6 (Windsurf)",
+          "limit": { "context": 262144, "output": 262144 }
         },
-        "glm-4.7-fast": {
-          "name": "GLM 4.7 Fast (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (Windsurf)",
+          "limit": { "context": 1048576, "output": 65536 },
+          "variants": { "minimal": {}, "low": {}, "medium": {}, "high": {} }
+        },
+        "claude-opus-4.6": {
+          "name": "Claude Opus 4.6 (Windsurf)",
+          "limit": { "context": 1000000, "output": 128000 },
+          "variants": {
+            "thinking": {}, "1m": {}, "thinking-1m": {}, "fast": {}, "thinking-fast": {}
           }
         }
       }
@@ -110,7 +93,7 @@ After saving the config:
 
 ```bash
 opencode models list                                            # confirm models appear under windsurf/
-opencode chat --model=windsurf/claude-4.5-opus "Hello"          # quick smoke test
+opencode chat --model=windsurf/claude-opus-4.7-high "Hello"     # quick smoke test
 ```
 
 Keep Windsurf running and signed in—credentials are fetched live from the IDE process.
