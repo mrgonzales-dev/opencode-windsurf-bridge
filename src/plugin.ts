@@ -476,28 +476,35 @@ function createStreamingResponse(
   const responseId = `chatcmpl-${crypto.randomUUID()}`;
   const requestedModel = request.model || getDefaultModel();
   const variantOverride = extractVariantFromProviderOptions(request.providerOptions);
-  const resolved = resolveModel(requestedModel, variantOverride);
-  const effectiveModel = resolved.variant
-    ? `${resolved.modelId}:${resolved.variant}`
-    : resolved.modelId;
+
+  // Lets ReadableStream.cancel() (= client disconnect) tear down the cascade
+  // poll loop instead of letting it run for the full 5-minute timeout.
+  const abort = new AbortController();
 
   return new ReadableStream({
     async start(controller) {
       try {
-        // Convert messages to the format expected by gRPC client
-        const messages: ChatMessage[] = request.messages
-          .filter((m) => m.role !== 'assistant' && m.role !== 'tool')
-          .map((m) => ({
-            role: m.role as ChatMessage['role'],
-            content:
-              typeof m.content === 'string'
-                ? m.content
-                : m.content.map((p) => p.text || '').join(''),
-          }));
+        // Resolve the model INSIDE the stream so an unknown-model error is
+        // surfaced as a proper SSE error frame, not a JSON 500 that breaks
+        // streaming clients which already committed to text/event-stream.
+        const resolved = resolveModel(requestedModel, variantOverride);
+        const effectiveModel = resolved.variant
+          ? `${resolved.modelId}:${resolved.variant}`
+          : resolved.modelId;
+        // Keep all roles — the Cascade flow flattens history into a single
+        // prompt and needs prior assistant/tool turns to maintain context.
+        const messages: ChatMessage[] = request.messages.map((m) => ({
+          role: m.role as ChatMessage['role'],
+          content:
+            typeof m.content === 'string'
+              ? m.content
+              : m.content.map((p) => p.text || '').join(''),
+        }));
 
         const generator = streamChatGenerator(credentials, {
           model: effectiveModel,
           messages,
+          signal: abort.signal,
         });
 
         for await (const chunk of generator) {
@@ -530,13 +537,20 @@ function createStreamingResponse(
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ error: { message: errorMessage } })}\n\n`
-          )
-        );
-        controller.close();
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ error: { message: errorMessage } })}\n\n`
+            )
+          );
+          controller.close();
+        } catch {
+          // controller already closed (e.g. via cancel) — nothing to do
+        }
       }
+    },
+    cancel() {
+      abort.abort();
     },
   });
 }
@@ -557,16 +571,14 @@ async function createNonStreamingResponse(
     : resolved.modelId;
   const chunks: string[] = [];
 
-  // Convert messages
-  const messages: ChatMessage[] = request.messages
-    .filter((m) => m.role !== 'assistant' && m.role !== 'tool')
-    .map((m) => ({
-      role: m.role as ChatMessage['role'],
-      content:
-        typeof m.content === 'string'
-          ? m.content
-          : m.content.map((p) => p.text || '').join(''),
-    }));
+  // Keep all roles — see the streaming counterpart above for rationale.
+  const messages: ChatMessage[] = request.messages.map((m) => ({
+    role: m.role as ChatMessage['role'],
+    content:
+      typeof m.content === 'string'
+        ? m.content
+        : m.content.map((p) => p.text || '').join(''),
+  }));
 
   const generator = streamChatGenerator(credentials, {
     model: effectiveModel,
@@ -616,14 +628,16 @@ async function ensureWindsurfProxyServer(): Promise<string> {
   const key = getGlobalKey();
   const g = globalThis as any;
 
-  // Return existing server URL if already started
-  const existingBaseURL = g[key]?.baseURL;
-  if (typeof existingBaseURL === 'string' && existingBaseURL.length > 0) {
-    return existingBaseURL;
+  // Return existing server URL if already started.
+  const slot = g[key];
+  if (slot && typeof slot.baseURL === 'string' && slot.baseURL.length > 0) {
+    return slot.baseURL;
   }
-
-  // Mark as starting to avoid duplicate starts
-  g[key] = { baseURL: '' };
+  // If a startup is in flight, share its promise so concurrent callers don't
+  // race into duplicate Bun.serve() calls or split across two random ports.
+  if (slot && slot.startup instanceof Promise) {
+    return slot.startup;
+  }
 
   const handler = async (req: Request): Promise<Response> => {
     try {
@@ -731,61 +745,69 @@ async function ensureWindsurfProxyServer(): Promise<string> {
   };
 
   const bunAny = globalThis as any;
-  if (typeof bunAny.Bun !== 'undefined' && typeof bunAny.Bun.serve === 'function') {
-    // Check if server already running on default port
+  if (typeof bunAny.Bun === 'undefined' || typeof bunAny.Bun.serve !== 'function') {
+    throw new Error('Windsurf proxy server requires Bun runtime');
+  }
+
+  const startup = (async (): Promise<string> => {
+    // If another instance is already serving on the default port, reuse it
+    // rather than racing for the same socket.
     try {
-      const res = await fetch(`http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+      const res = await fetch(
+        `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/health`
+      ).catch(() => null);
       if (res && res.ok) {
-        const baseURL = `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/v1`;
-        g[key].baseURL = baseURL;
-        return baseURL;
+        return `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/v1`;
       }
     } catch {
-      // ignore
+      /* ignore */
     }
 
-    const startServer = (port: number) => {
-      return bunAny.Bun.serve({
+    const startServer = (port: number) =>
+      bunAny.Bun.serve({
         hostname: WINDSURF_PROXY_HOST,
         port,
         fetch: handler,
-        // Keep connections alive longer to allow slow/long chat streams
-        idleTimeout: 100, // seconds
+        // Cascade chat can go silent for >100s during slow-model thinking
+        // before the first token. Bun's idleTimeout is capped at 255s; we
+        // disable it (0 = no limit) since this is a localhost-only proxy.
+        idleTimeout: 0,
       });
-    };
 
     try {
       const server = startServer(WINDSURF_PROXY_DEFAULT_PORT);
-      const baseURL = `http://${WINDSURF_PROXY_HOST}:${server.port}/v1`;
-      g[key].baseURL = baseURL;
-      return baseURL;
+      return `http://${WINDSURF_PROXY_HOST}:${server.port}/v1`;
     } catch (error) {
       const code = (error as any)?.code;
-      if (code !== 'EADDRINUSE') {
-        throw error;
-      }
+      if (code !== 'EADDRINUSE') throw error;
 
-      // Port in use - check if it's our server
+      // EADDRINUSE — check whether the squatter is our health endpoint.
       try {
-        const res = await fetch(`http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+        const res = await fetch(
+          `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/health`
+        ).catch(() => null);
         if (res && res.ok) {
-          const baseURL = `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/v1`;
-          g[key].baseURL = baseURL;
-          return baseURL;
+          return `http://${WINDSURF_PROXY_HOST}:${WINDSURF_PROXY_DEFAULT_PORT}/v1`;
         }
       } catch {
-        // ignore
+        /* ignore */
       }
 
-      // Fallback to random port
+      // Different process owns the default port — fall back to a random one.
       const server = startServer(0);
-      const baseURL = `http://${WINDSURF_PROXY_HOST}:${server.port}/v1`;
-      g[key].baseURL = baseURL;
-      return baseURL;
+      return `http://${WINDSURF_PROXY_HOST}:${server.port}/v1`;
     }
-  }
+  })();
 
-  throw new Error('Windsurf proxy server requires Bun runtime');
+  g[key] = { baseURL: '', startup };
+  try {
+    const baseURL = await startup;
+    g[key] = { baseURL };
+    return baseURL;
+  } catch (err) {
+    delete g[key];
+    throw err;
+  }
 }
 
 // ============================================================================
