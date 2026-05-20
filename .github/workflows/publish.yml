@@ -1,0 +1,115 @@
+name: Publish to npm
+
+# Publish flow:
+#   1. Push a git tag `v<x.y.z>` matching package.json's "version" field.
+#   2. CI checks out, installs, typechecks, runs unit tests, builds.
+#   3. `npm publish --provenance` makes the version the new `latest`.
+#   4. `npm dist-tag add ... beta` then points the `beta` tag at the same version,
+#      so `bun add opencode-windsurf-auth@beta` keeps working.
+#
+# Manual override: `workflow_dispatch` (with optional `dry_run`) lets you
+# rehearse the pipeline without publishing.
+#
+# Auth: npm Trusted Publisher (OIDC). Configure once at
+#   https://www.npmjs.com/package/opencode-windsurf-auth/access
+# Publisher = GitHub Actions, org = rsvedant, repo = opencode-windsurf-auth,
+# workflow filename = publish.yml. No NPM_TOKEN secret needed —
+# `permissions.id-token: write` + actions/setup-node give npm the OIDC token.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip the publish + dist-tag steps (rehearsal only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write   # required for `npm publish --provenance` (sigstore)
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, publish & tag beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.14
+
+      - name: Setup Node (npm + provenance)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve and verify version
+        id: version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            if [[ "${PKG_VERSION}" != "${TAG_VERSION}" ]]; then
+              echo "::error::Git tag v${TAG_VERSION} does not match package.json version ${PKG_VERSION}"
+              exit 1
+            fi
+          fi
+          echo "version=${PKG_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved version: ${PKG_VERSION}"
+
+      - name: Refuse to publish a version that already exists
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          if npm view "opencode-windsurf-auth@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::error::opencode-windsurf-auth@${{ steps.version.outputs.version }} is already published. Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Run unit tests
+        run: bun test tests/unit
+
+      - name: Build
+        run: bun run build
+
+      - name: Publish to npm (latest)
+        if: ${{ inputs.dry_run != true }}
+        run: npm publish --provenance --access public
+
+      - name: Point beta dist-tag at the new version
+        if: ${{ inputs.dry_run != true }}
+        run: npm dist-tag add "opencode-windsurf-auth@${{ steps.version.outputs.version }}" beta
+
+      - name: Summary
+        run: |
+          {
+            echo "## opencode-windsurf-auth publish"
+            echo ""
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "**Dry run** — would have published \`${{ steps.version.outputs.version }}\` as \`latest\`, then pointed \`beta\` at it."
+            else
+              echo "Published \`opencode-windsurf-auth@${{ steps.version.outputs.version }}\`."
+              echo ""
+              echo "| dist-tag | version |"
+              echo "|----------|---------|"
+              echo "| latest   | ${{ steps.version.outputs.version }} |"
+              echo "| beta     | ${{ steps.version.outputs.version }} |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
