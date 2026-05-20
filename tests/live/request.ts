@@ -1,18 +1,26 @@
 #!/usr/bin/env bun
 /**
- * Direct gRPC request tester with detailed error analysis
- * 
- * This sends requests directly to the Windsurf language server
- * and captures the exact error messages to understand the expected format.
- * 
- * Usage:
- *   bun run tests/live/request.ts
+ * Direct gRPC request tester with detailed error analysis.
+ *
+ * Historical script — targets the legacy `RawGetChatMessage` RPC which
+ * Windsurf 2.x rejects with the Cascade session gate. Credential discovery
+ * (`--csrf_token` regex) is also stale; current Windsurf passes the token in
+ * the `WINDSURF_CSRF_TOKEN` env var instead. See docs/CASCADE_PROTOCOL.md.
+ *
+ * Kept around as a reference for anyone debugging the Raw path against an
+ * older Windsurf build. For Cascade-flow testing use the unit tests + a live
+ * `opencode run` against the rebuilt plugin.
  */
 
 import * as http2 from "http2";
 import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  encodeString,
+  encodeMessage,
+  encodeVarintField,
+} from "../../src/plugin/protobuf.js";
 
 const FIXTURES_DIR = path.join(import.meta.dir, "../fixtures");
 
@@ -47,29 +55,8 @@ function getCredentials(): Credentials | null {
 // Protobuf Encoding Helpers
 // ============================================================================
 
-function encodeVarint(value: number): number[] {
-  const bytes: number[] = [];
-  let v = value;
-  while (v > 0x7f) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v);
-  return bytes.length ? bytes : [0];
-}
-
-function encodeString(fieldNum: number, str: string): number[] {
-  const strBytes = Buffer.from(str, "utf8");
-  return [(fieldNum << 3) | 2, ...encodeVarint(strBytes.length), ...strBytes];
-}
-
-function encodeVarintField(fieldNum: number, value: number): number[] {
-  return [(fieldNum << 3) | 0, ...encodeVarint(value)];
-}
-
-function encodeMessage(fieldNum: number, messageBytes: number[]): number[] {
-  return [(fieldNum << 3) | 2, ...encodeVarint(messageBytes.length), ...messageBytes];
-}
+// Encoders now imported from ../../src/plugin/protobuf — single source of
+// truth so this script can't drift from the production encoder.
 
 function grpcFrame(payload: Buffer): Buffer {
   const frame = Buffer.alloc(5 + payload.length);

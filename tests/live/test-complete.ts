@@ -47,30 +47,13 @@ function getCredentials(): Credentials | null {
   }
 }
 
-// Protobuf encoding helpers
-function encodeVarint(value: number | bigint): number[] {
-  const bytes: number[] = [];
-  let v = BigInt(value);
-  while (v > 127n) {
-    bytes.push(Number(v & 0x7fn) | 0x80);
-    v >>= 7n;
-  }
-  bytes.push(Number(v));
-  return bytes;
-}
-
-function encodeString(fieldNum: number, str: string): number[] {
-  const strBytes = Buffer.from(str, "utf8");
-  return [(fieldNum << 3) | 2, ...encodeVarint(strBytes.length), ...strBytes];
-}
-
-function encodeVarintField(fieldNum: number, value: number | bigint): number[] {
-  return [(fieldNum << 3) | 0, ...encodeVarint(value)];
-}
-
-function encodeMessage(fieldNum: number, bytes: number[]): number[] {
-  return [(fieldNum << 3) | 2, ...encodeVarint(bytes.length), ...bytes];
-}
+// Protobuf encoding helpers — imported from the shared module so this
+// script and production code can't drift apart.
+import {
+  encodeString,
+  encodeMessage,
+  encodeVarintField,
+} from "../../src/plugin/protobuf.js";
 
 function grpcFrame(payload: Buffer): Buffer {
   const frame = Buffer.alloc(5 + payload.length);

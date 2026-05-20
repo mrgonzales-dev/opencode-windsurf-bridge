@@ -32,42 +32,17 @@ export interface StreamChatOptions {
 // ============================================================================
 // Protobuf Encoding Helpers
 // ============================================================================
-
-/**
- * Encode a number as a varint (variable-length integer)
- */
-function encodeVarint(value: number | bigint): number[] {
-  const bytes: number[] = [];
-  let v = BigInt(value);
-  while (v > 127n) {
-    bytes.push(Number(v & 0x7fn) | 0x80);
-    v >>= 7n;
-  }
-  bytes.push(Number(v));
-  return bytes;
-}
-
-/**
- * Encode a string field (wire type 2: length-delimited)
- */
-function encodeString(fieldNum: number, str: string): number[] {
-  const strBytes = Buffer.from(str, 'utf8');
-  return [(fieldNum << 3) | 2, ...encodeVarint(strBytes.length), ...strBytes];
-}
-
-/**
- * Encode a nested message field (wire type 2: length-delimited)
- */
-function encodeMessage(fieldNum: number, data: number[]): number[] {
-  return [(fieldNum << 3) | 2, ...encodeVarint(data.length), ...data];
-}
-
-/**
- * Encode a varint field (wire type 0)
- */
-function encodeVarintField(fieldNum: number, value: number | bigint): number[] {
-  return [(fieldNum << 3) | 0, ...encodeVarint(value)];
-}
+//
+// Shared in src/plugin/protobuf.ts so production code and the diagnostic
+// scripts in tests/live/ use exactly the same implementation. The previous
+// inline copy here used a single-byte tag (`(fieldNum << 3) | 2`) which
+// silently corrupted any field with number >= 16 — see protobuf.ts for the
+// historical context.
+import {
+  encodeString,
+  encodeMessage,
+  encodeVarintField,
+} from './protobuf.js';
 
 // ============================================================================
 // Request Building
@@ -275,27 +250,8 @@ function buildChatRequest(
 // Response Parsing (Protobuf Decoding)
 // ============================================================================
 
-/**
- * Decode a varint from a buffer starting at offset
- * @returns [value, bytesRead]
- */
-function decodeVarint(buffer: Buffer, offset: number): [bigint, number] {
-  let result = 0n;
-  let shift = 0n;
-  let bytesRead = 0;
-
-  while (offset + bytesRead < buffer.length) {
-    const byte = buffer[offset + bytesRead];
-    bytesRead++;
-    result |= BigInt(byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) {
-      break;
-    }
-    shift += 7n;
-  }
-
-  return [result, bytesRead];
-}
+// decodeVarint comes from the shared protobuf module too.
+import { decodeVarint } from './protobuf.js';
 
 /**
  * Parse a protobuf field from buffer
