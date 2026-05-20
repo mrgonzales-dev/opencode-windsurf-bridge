@@ -92,8 +92,8 @@ Add the following to your Opencode config (typically `~/.config/opencode/config.
 After saving the config:
 
 ```bash
-opencode models list                                            # confirm models appear under windsurf/
-opencode chat --model=windsurf/claude-opus-4.7-high "Hello"     # quick smoke test
+opencode models windsurf                                        # confirm models appear under windsurf/
+opencode run --model=windsurf/claude-opus-4.7-high "Hello"      # quick smoke test
 ```
 
 Keep Windsurf running and signed in—credentials are fetched live from the IDE process.
