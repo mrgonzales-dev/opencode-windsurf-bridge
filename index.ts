@@ -22,7 +22,6 @@
 export {
   createWindsurfPlugin,
   WindsurfPlugin,
-  CodeiumPlugin,
 } from './src/plugin.js';
 
 // Default export for OpenCode plugin loader compatibility

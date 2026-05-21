@@ -16,14 +16,26 @@ import * as os from 'os';
 // ============================================================================
 
 export interface WindsurfCredentials {
-  /** CSRF token for authenticating with local language server */
+  /** CSRF token for authenticating with local language server (unused in cloud-direct mode) */
   csrfToken: string;
-  /** Port where the language server is listening */
+  /** Port where the language server is listening (0 in cloud-direct mode) */
   port: number;
-  /** Codeium API key */
+  /** Codeium API key (devin-session-token$<JWT> for current Cognition tier) */
   apiKey: string;
   /** Windsurf version string */
   version: string;
+  /**
+   * When true, the plugin bypasses the local language_server entirely and
+   * streams chat completions from `server.codeium.com` directly. `csrfToken`
+   * + `port` are unused; `apiServerUrl` becomes load-bearing.
+   */
+  cloudDirect?: boolean;
+  /**
+   * Tenant-specific API server URL (`https://server.codeium.com`,
+   * `https://server.self-serve.windsurf.com`, etc.). Returned by RegisterUser;
+   * only used when `cloudDirect` is true.
+   */
+  apiServerUrl?: string;
 }
 
 export enum WindsurfErrorCode {

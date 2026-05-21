@@ -10,7 +10,13 @@ const VSCODE_STATE_PATHS = {
     win32: path.join(os.homedir(), 'AppData/Roaming/Windsurf/User/globalStorage/state.vscdb'),
 } as const;
 
-function getApiKeyFromStateParam(): { raw: string, parsed: any } | null {
+type WindsurfAuthStatus = {
+  apiKey?: string;
+  accessToken?: string;
+  userStatusProtoBinaryBase64?: string;
+} & Record<string, unknown>;
+
+function getApiKeyFromStateParam(): { raw: string; parsed: WindsurfAuthStatus | null } | null {
     const platform = process.platform as keyof typeof VSCODE_STATE_PATHS;
     const statePath = VSCODE_STATE_PATHS[platform];
 
