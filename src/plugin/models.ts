@@ -837,6 +837,42 @@ const MODEL_NAME_TO_ENUM: Record<string, ModelEnumValue> = {
   'gpt-5.2-codex-medium-priority': ModelEnum.GPT_5_2_CODEX_MEDIUM_PRIORITY,
   'gpt-5.2-codex-high-priority': ModelEnum.GPT_5_2_CODEX_HIGH_PRIORITY,
   'gpt-5.2-codex-xhigh-priority': ModelEnum.GPT_5_2_CODEX_XHIGH_PRIORITY,
+
+  // Enterprise / private model slots — `private-1` .. `private-30`
+  // (resolves to cloud model_uid `MODEL_PRIVATE_N` via the default
+  // enum→uid fallback). Whether a given slot is populated for a user's
+  // account is account-specific; the cloud's GetCascadeModelConfigs
+  // endpoint reveals which slots back real models for the caller.
+  'private-1': ModelEnum.PRIVATE_1,
+  'private-2': ModelEnum.PRIVATE_2,
+  'private-3': ModelEnum.PRIVATE_3,
+  'private-4': ModelEnum.PRIVATE_4,
+  'private-5': ModelEnum.PRIVATE_5,
+  'private-6': ModelEnum.PRIVATE_6,
+  'private-7': ModelEnum.PRIVATE_7,
+  'private-8': ModelEnum.PRIVATE_8,
+  'private-9': ModelEnum.PRIVATE_9,
+  'private-10': ModelEnum.PRIVATE_10,
+  'private-11': ModelEnum.PRIVATE_11,
+  'private-12': ModelEnum.PRIVATE_12,
+  'private-13': ModelEnum.PRIVATE_13,
+  'private-14': ModelEnum.PRIVATE_14,
+  'private-15': ModelEnum.PRIVATE_15,
+  'private-16': ModelEnum.PRIVATE_16,
+  'private-17': ModelEnum.PRIVATE_17,
+  'private-18': ModelEnum.PRIVATE_18,
+  'private-19': ModelEnum.PRIVATE_19,
+  'private-20': ModelEnum.PRIVATE_20,
+  'private-21': ModelEnum.PRIVATE_21,
+  'private-22': ModelEnum.PRIVATE_22,
+  'private-23': ModelEnum.PRIVATE_23,
+  'private-24': ModelEnum.PRIVATE_24,
+  'private-25': ModelEnum.PRIVATE_25,
+  'private-26': ModelEnum.PRIVATE_26,
+  'private-27': ModelEnum.PRIVATE_27,
+  'private-28': ModelEnum.PRIVATE_28,
+  'private-29': ModelEnum.PRIVATE_29,
+  'private-30': ModelEnum.PRIVATE_30,
 };
 
 /**
@@ -962,6 +998,38 @@ const ENUM_TO_MODEL_NAME: Partial<Record<ModelEnumValue, string>> = {
   [ModelEnum.GPT_5_2_CODEX_MEDIUM]: 'gpt-5.2-codex',
   [ModelEnum.GPT_5_2_CODEX_HIGH]: 'gpt-5.2-codex-high',
   [ModelEnum.GPT_5_2_CODEX_XHIGH]: 'gpt-5.2-codex-xhigh',
+
+  // Enterprise / private slots (see MODEL_NAME_TO_ENUM above)
+  [ModelEnum.PRIVATE_1]: 'private-1',
+  [ModelEnum.PRIVATE_2]: 'private-2',
+  [ModelEnum.PRIVATE_3]: 'private-3',
+  [ModelEnum.PRIVATE_4]: 'private-4',
+  [ModelEnum.PRIVATE_5]: 'private-5',
+  [ModelEnum.PRIVATE_6]: 'private-6',
+  [ModelEnum.PRIVATE_7]: 'private-7',
+  [ModelEnum.PRIVATE_8]: 'private-8',
+  [ModelEnum.PRIVATE_9]: 'private-9',
+  [ModelEnum.PRIVATE_10]: 'private-10',
+  [ModelEnum.PRIVATE_11]: 'private-11',
+  [ModelEnum.PRIVATE_12]: 'private-12',
+  [ModelEnum.PRIVATE_13]: 'private-13',
+  [ModelEnum.PRIVATE_14]: 'private-14',
+  [ModelEnum.PRIVATE_15]: 'private-15',
+  [ModelEnum.PRIVATE_16]: 'private-16',
+  [ModelEnum.PRIVATE_17]: 'private-17',
+  [ModelEnum.PRIVATE_18]: 'private-18',
+  [ModelEnum.PRIVATE_19]: 'private-19',
+  [ModelEnum.PRIVATE_20]: 'private-20',
+  [ModelEnum.PRIVATE_21]: 'private-21',
+  [ModelEnum.PRIVATE_22]: 'private-22',
+  [ModelEnum.PRIVATE_23]: 'private-23',
+  [ModelEnum.PRIVATE_24]: 'private-24',
+  [ModelEnum.PRIVATE_25]: 'private-25',
+  [ModelEnum.PRIVATE_26]: 'private-26',
+  [ModelEnum.PRIVATE_27]: 'private-27',
+  [ModelEnum.PRIVATE_28]: 'private-28',
+  [ModelEnum.PRIVATE_29]: 'private-29',
+  [ModelEnum.PRIVATE_30]: 'private-30',
 };
 
 // ============================================================================

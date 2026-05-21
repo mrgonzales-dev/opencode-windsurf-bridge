@@ -192,6 +192,54 @@ export const ModelEnum = {
   GPT_5_2_CODEX_MEDIUM_PRIORITY: 427,
   GPT_5_2_CODEX_HIGH_PRIORITY: 428,
   GPT_5_2_CODEX_XHIGH_PRIORITY: 429,
+
+  // ─── Enterprise / private model slots ──────────────────────────────────
+  // Cognition assigns each enterprise customer up to 30 "PRIVATE" enum
+  // slots that point at their account-specific model deployments. The
+  // cloud's GetCascadeModelConfigs catalog confirmed (against a real
+  // account) that these slots back actual models — e.g. PRIVATE_2 →
+  // "Claude Sonnet 4.5", PRIVATE_6..10 → GPT-5 Low/Medium/High/Pro
+  // Thinking, PRIVATE_11 → "Claude Haiku 4.5". The model_uid the cloud
+  // accepts is the literal string `MODEL_PRIVATE_N`, which is exactly
+  // what `enumKeyToCloudUid`'s default `MODEL_${key}` fallback emits —
+  // no prefix override needed.
+  //
+  // Surfaced to opencode users as `private-1` through `private-30`.
+  // Originally identified by @oniz93 in PR #9; enum values verified
+  // against the Windsurf extension's bundled catalog (May 2026).
+  // Enum keys follow our project's convention (no `MODEL_` prefix — the
+  // `enumKeyToCloudUid` default prepends it to produce `MODEL_PRIVATE_N`,
+  // which is exactly the string the cloud accepts as model_uid).
+  PRIVATE_1: 219,
+  PRIVATE_2: 220,
+  PRIVATE_3: 221,
+  PRIVATE_4: 222,
+  PRIVATE_5: 223,
+  PRIVATE_6: 314,
+  PRIVATE_7: 315,
+  PRIVATE_8: 316,
+  PRIVATE_9: 317,
+  PRIVATE_10: 318,
+  PRIVATE_11: 347,
+  PRIVATE_12: 348,
+  PRIVATE_13: 349,
+  PRIVATE_14: 350,
+  PRIVATE_15: 351,
+  PRIVATE_16: 363,
+  PRIVATE_17: 364,
+  PRIVATE_18: 365,
+  PRIVATE_19: 366,
+  PRIVATE_20: 367,
+  PRIVATE_21: 372,
+  PRIVATE_22: 373,
+  PRIVATE_23: 374,
+  PRIVATE_24: 375,
+  PRIVATE_25: 376,
+  PRIVATE_26: 380,
+  PRIVATE_27: 381,
+  PRIVATE_28: 382,
+  PRIVATE_29: 383,
+  PRIVATE_30: 384,
 } as const;
 
 export type ModelEnumValue = (typeof ModelEnum)[keyof typeof ModelEnum];
