@@ -110,9 +110,35 @@ export async function saveCredentials(creds: PersistedCredentials): Promise<void
   ensureDir();
   const finalPath = getCredentialsPath();
   await withLock(() => {
+    // O_EXCL on the tmp file so a pre-placed symlink with the same name
+    // can't redirect the write outside the credentials dir. The pid
+    // suffix makes the tmp name process-scoped but it isn't unguessable
+    // — without O_EXCL an attacker who knows the pid (every local process
+    // does, via ps) could plant a symlink between ensureDir and write.
     const tmpPath = `${finalPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    // Best-effort cleanup of any leftover tmp from a prior crash. We
+    // unlink (not stat-and-decide) so a hostile symlink gets dropped.
+    try { fs.unlinkSync(tmpPath); } catch { /* not there, fine */ }
+    // O_NOFOLLOW so a pre-placed symlink at tmpPath can't redirect the
+    // open into /etc/<wherever>. Combined with O_EXCL this means an
+    // attacker can't get our write to land anywhere except a brand-new
+    // regular file inside the credentials directory.
+    const noFollow = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+    const fd = fs.openSync(
+      tmpPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+      0o600,
+    );
+    try {
+      fs.writeSync(fd, JSON.stringify(creds, null, 2));
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmpPath, finalPath);
+    // Re-apply 0600 in case umask widened the rename target's mode
+    // (POSIX rename preserves the source's mode on Linux/macOS; this is
+    // defense in depth for the Windows fallback path).
+    try { fs.chmodSync(finalPath, 0o600); } catch { /* ok */ }
   });
 }
 
@@ -124,6 +150,47 @@ export async function saveCredentials(creds: PersistedCredentials): Promise<void
 export function loadCredentials(): PersistedCredentials | null {
   const p = getCredentialsPath();
   if (!fs.existsSync(p)) return null;
+  // Permission check — refuse to load a credentials file that's wider than
+  // 0600. A previously-leaked file with mode 0644 (e.g. created before our
+  // tightened write path, or copied by a misconfigured backup script)
+  // means the api_key may have been observed by other local users. Better
+  // to fail loud than to silently keep using a compromised credential.
+  // We only enforce this on POSIX — Windows file ACLs don't map cleanly
+  // to mode bits.
+  if (process.platform !== 'win32') {
+    try {
+      // lstat — NOT stat. We want to inspect the credentials file itself,
+      // not whatever a symlink at that path might point at. If it IS a
+      // symlink, refuse to load — an attacker who can plant a symlink
+      // could otherwise have us read /etc/passwd or similar.
+      const lst = fs.lstatSync(p);
+      if (lst.isSymbolicLink()) {
+        throw new Error(
+          `Credentials file at ${p} is a symbolic link. Refusing to follow — delete it and re-run sign-in.`,
+        );
+      }
+      const st = fs.statSync(p);
+      // We accept 0o600 (the mode we write) and 0o400 (read-only chown).
+      // Anything else means the file is too permissive.
+      const modeBits = st.mode & 0o777;
+      if (modeBits !== 0o600 && modeBits !== 0o400) {
+        // Try to tighten in place. If that fails, surface a clean error
+        // rather than load a possibly-compromised credential.
+        try {
+          fs.chmodSync(p, 0o600);
+        } catch (chmodErr) {
+          throw new Error(
+            `Credentials file at ${p} has insecure permissions (mode ${modeBits.toString(8).padStart(4, '0')}). ` +
+            `Expected 0600. Failed to repair: ${(chmodErr as Error).message}. ` +
+            `Either chmod 600 the file yourself or run 'opencode-windsurf-auth logout && opencode auth login' to recreate it.`,
+          );
+        }
+      }
+    } catch (statErr) {
+      if ((statErr as NodeJS.ErrnoException).code !== 'ENOENT') throw statErr;
+      return null;
+    }
+  }
   const raw = fs.readFileSync(p, 'utf8');
   let parsed: unknown;
   try {

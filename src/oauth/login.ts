@@ -135,8 +135,15 @@ export async function prepareLogin(opts: LoginOptions = {}): Promise<PreparedLog
   // opening the auth tab" symptom after the first refactor.)
   //
   // If the user passes onUrl, give them a chance to handle the URL their own
-  // way (logging, copy-to-clipboard, etc.) — that's fine in parallel.
-  opts.onUrl?.(url);
+  // way (logging, copy-to-clipboard, etc.) — that's fine in parallel. The
+  // callback may be sync OR async; explicitly handle both via Promise.resolve
+  // so a rejected promise doesn't become an unhandled-rejection warning.
+  try {
+    const r = opts.onUrl?.(url);
+    if (r && typeof (r as Promise<void>).catch === 'function') {
+      (r as Promise<void>).catch(() => { /* swallow — diagnostic-only callback */ });
+    }
+  } catch { /* sync throw — also swallow */ }
   // Don't await — openBrowser shells out and we don't need to block on it.
   // Errors are non-fatal: opencode also prints "Go to: <url>" so the user
   // can always click it manually.
@@ -160,11 +167,19 @@ export async function prepareLogin(opts: LoginOptions = {}): Promise<PreparedLog
           opts.signal,
           'Sign-in timed out — try again and complete the browser flow within 5 minutes.',
         );
-        if (callback.state && callback.state !== state) {
+        // STRICT state check — required to match exactly. Previously the
+        // condition was `callback.state && callback.state !== state`,
+        // which short-circuited the mismatch error if the attacker sent
+        // an EMPTY state. A forged loopback callback could then ride in
+        // with any token and bind the user's session to it. (B2 fix.)
+        if (callback.state !== state) {
           throw new Error(
-            `OAuth state mismatch (expected ${state.slice(0, 8)}…, got ${callback.state.slice(0, 8)}…). ` +
+            `OAuth state mismatch (expected ${state.slice(0, 8)}…, got ${(callback.state || '(empty)').slice(0, 8)}…). ` +
             'Possible CSRF — re-run sign-in.',
           );
+        }
+        if (!callback.token) {
+          throw new Error('OAuth callback delivered an empty token. Re-run sign-in.');
         }
         const result = await registerUser(callback.token, region, opts.signal);
         await saveCredentials({
@@ -290,6 +305,25 @@ function startCallbackServer(requestedPort?: number): Promise<CallbackServer> {
         return;
       }
 
+      // Reject the callback immediately if the state doesn't match what
+      // any of our waiters expect. A forged callback from a hostile local
+      // tab can otherwise:
+      //   - cause `flushWaiters` to resolve our legitimate waiter with
+      //     attacker-controlled token (M5)
+      //   - bind our session to the attacker's account when the OAuth
+      //     state ends up empty (B2's second leg)
+      // Now we ONLY accept callbacks whose state matches a live waiter.
+      const matchedWaiter = waiters.find((w) => w.state === stateParam);
+      if (!matchedWaiter) {
+        // Don't kill the legitimate flow — just ignore the stray and tell
+        // the requester to close the tab.
+        renderResponse(
+          res,
+          false,
+          'Unexpected callback — this loopback is bound to a different sign-in attempt. Close this tab and start over from the CLI.',
+        );
+        return;
+      }
       captured = { token: tokenParam, state: stateParam };
       renderResponse(res, true, 'Sign-in complete — you can close this tab.');
       flushWaiters();
@@ -300,18 +334,24 @@ function startCallbackServer(requestedPort?: number): Promise<CallbackServer> {
     function flushWaiters() {
       if (!captured) return;
       const c = captured;
-      while (waiters.length > 0) {
-        const w = waiters.shift()!;
+      // Walk the queue and resolve only the waiter(s) whose state matches
+      // the capture. Other waiters keep waiting (or time out on their own
+      // schedule). Previously this resolved EVERY waiter with whatever was
+      // captured even when states didn't line up.
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        const w = waiters[i];
         if (c.error) {
           w.reject(new Error(c.error));
-        } else if (c.state && w.state !== c.state) {
-          // Wrong state — keep listening (rare; an attacker hitting /auth
-          // with garbage shouldn't kill the legitimate flow).
-          // But also surface for diagnostics.
-          w.resolve({ token: c.token, state: c.state });
-        } else {
-          w.resolve({ token: c.token, state: c.state });
+          waiters.splice(i, 1);
+          continue;
         }
+        if (w.state === c.state) {
+          w.resolve({ token: c.token, state: c.state });
+          waiters.splice(i, 1);
+        }
+        // else: skip — this waiter is for a different state, leave it
+        // queued so a future matching callback (or its own timeout) can
+        // handle it.
       }
     }
 
@@ -418,16 +458,34 @@ function defaultPromptForToken(): Promise<string> {
     }
     process.stdout.write('\nPaste your Windsurf auth token (from the browser page) and press Enter:\n> ');
     let buf = '';
-    const onData = (chunk: Buffer) => {
+    const cleanup = (): void => {
+      process.stdin.removeListener('data', onData);
+      process.stdin.removeListener('end', onEnd);
+      process.stdin.removeListener('error', onErr);
+      // We .resume()'d the stream; .pause() so the process can exit cleanly
+      // afterward (otherwise the stdin handle keeps the event loop alive).
+      try { process.stdin.pause(); } catch { /* ok */ }
+    };
+    const onData = (chunk: Buffer): void => {
       const s = chunk.toString('utf8');
       buf += s;
       if (buf.includes('\n')) {
-        process.stdin.removeListener('data', onData);
+        cleanup();
         const idx = buf.indexOf('\n');
         resolve(buf.slice(0, idx).trim());
       }
     };
+    const onEnd = (): void => {
+      cleanup();
+      reject(new Error('stdin closed before token was provided'));
+    };
+    const onErr = (err: Error): void => {
+      cleanup();
+      reject(err);
+    };
     process.stdin.on('data', onData);
+    process.stdin.on('end', onEnd);
+    process.stdin.on('error', onErr);
     process.stdin.resume();
   });
 }
@@ -464,12 +522,28 @@ function buildLoginUrl(args: BuildLoginUrlArgs): string {
 // ============================================================================
 
 /** Cross-platform "open this URL in the user's default browser". */
+/**
+ * Escape a URL for `cmd /c start ""`. cmd's syntax requires escaping `&`,
+ * `^`, `|`, `<`, `>` with `^`; `%` needs doubling. Previously we only handled
+ * `&`, which silently dropped `%` (percent-encoded) bytes from OAuth state
+ * parameters.
+ */
+function escapeCmdUrl(url: string): string {
+  return url
+    .replace(/\^/g, '^^')
+    .replace(/&/g, '^&')
+    .replace(/\|/g, '^|')
+    .replace(/</g, '^<')
+    .replace(/>/g, '^>')
+    .replace(/%/g, '%%');
+}
+
 async function openBrowser(url: string): Promise<void> {
   // We deliberately avoid `import open from 'open'` to keep our dependency
   // surface tiny. The three OS commands below cover macOS / Linux / Windows.
   const cmds: Array<{ cmd: string; args: string[] }> =
     process.platform === 'darwin' ? [{ cmd: 'open', args: [url] }]
-    : process.platform === 'win32' ? [{ cmd: 'cmd', args: ['/c', 'start', '""', url.replace(/&/g, '^&')] }]
+    : process.platform === 'win32' ? [{ cmd: 'cmd', args: ['/c', 'start', '""', escapeCmdUrl(url)] }]
     : [{ cmd: 'xdg-open', args: [url] }, { cmd: 'sensible-browser', args: [url] }];
 
   for (const c of cmds) {
