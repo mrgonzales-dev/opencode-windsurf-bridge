@@ -73,6 +73,19 @@ export async function login(opts: LoginOptions = {}): Promise<OAuthLoginResult> 
 
   const result = await registerUser(token, region, opts.signal);
 
+  // Preserve the existing `syncedViaOpencodeAuth` flag if a previous
+  // login wrote one. Without this preservation, a user who did
+  // `opencode auth login` (sets flag=true) and then later ran
+  // `npx opencode-windsurf-auth login` (used to omit the flag) would
+  // end up with flag=undefined — subsequent `opencode auth logout`
+  // would no longer mirror-clear our credentials file, leaving a stale
+  // api_key trusted by the proxy auth gate.
+  let existingSynced: boolean | undefined;
+  try {
+    const existing = (await import('./storage.js')).loadCredentials();
+    existingSynced = existing?.syncedViaOpencodeAuth;
+  } catch { /* no prior creds */ }
+
   await saveCredentials({
     apiKey: result.apiKey,
     name: result.name,
@@ -80,6 +93,7 @@ export async function login(opts: LoginOptions = {}): Promise<OAuthLoginResult> 
     redirectUrl: result.redirectUrl,
     issuedAt: new Date().toISOString(),
     oauthClientId: region.oauthClientId,
+    ...(existingSynced !== undefined ? { syncedViaOpencodeAuth: existingSynced } : {}),
   });
 
   return result;
@@ -198,6 +212,13 @@ export async function prepareLogin(opts: LoginOptions = {}): Promise<PreparedLog
           throw new Error('OAuth callback delivered an empty token. Re-run sign-in.');
         }
         const result = await registerUser(callback.token, region, opts.signal);
+        // Preserve syncedViaOpencodeAuth if it already exists — see the
+        // matching comment in login() above for why.
+        let existingSynced: boolean | undefined;
+        try {
+          const existing = (await import('./storage.js')).loadCredentials();
+          existingSynced = existing?.syncedViaOpencodeAuth;
+        } catch { /* no prior creds */ }
         await saveCredentials({
           apiKey: result.apiKey,
           name: result.name,
@@ -205,6 +226,7 @@ export async function prepareLogin(opts: LoginOptions = {}): Promise<PreparedLog
           redirectUrl: result.redirectUrl,
           issuedAt: new Date().toISOString(),
           oauthClientId: region.oauthClientId,
+          ...(existingSynced !== undefined ? { syncedViaOpencodeAuth: existingSynced } : {}),
         });
         return result;
       } finally {
@@ -249,11 +271,19 @@ async function loginWithLoopback(
       loginHint: opts.loginHint,
     });
 
+    // Pre-register the waiter BEFORE opening the browser. Same race
+    // window as prepareLogin's: a fast Auth0 round-trip (cached session)
+    // can hit /auth before we get to `server.callback(state)`, and the
+    // handler's "no matching waiter" branch would drop the callback.
+    // Queueing the waiter promise here ensures one exists by the time
+    // any HTTP request can land.
+    const callbackPromise = server.callback(state);
+
     await opts.onUrl?.(loginUrl);
     await openBrowser(loginUrl);
 
     const callback = await waitWithTimeout(
-      server.callback(state),
+      callbackPromise,
       timeoutMs,
       opts.signal,
       'Sign-in timed out — re-run `login` and complete the browser flow within 5 minutes.',
@@ -308,6 +338,21 @@ function startCallbackServer(requestedPort?: number): Promise<CallbackServer> {
       const errorParam = url.searchParams.get('error') ?? url.searchParams.get('error_description');
 
       if (errorParam) {
+        // State-validate the error callback the same way we do the
+        // success callback (line ~316). Without this, ANY local process
+        // can drop a GET to `127.0.0.1:<port>/auth?error=denied` and
+        // abort the legitimate login attempt without ever needing to
+        // know our state nonce. Only flush waiters whose state matches
+        // — leave others queued.
+        const errMatched = waiters.find((w) => w.state === stateParam);
+        if (!errMatched) {
+          renderResponse(
+            res,
+            false,
+            'Unexpected error callback — does not match any active sign-in attempt. Close this tab.',
+          );
+          return;
+        }
         captured = { token: '', state: stateParam, error: errorParam };
         renderResponse(res, false, `Sign-in failed: ${errorParam}`);
         flushWaiters();

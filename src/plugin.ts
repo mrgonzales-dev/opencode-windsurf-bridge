@@ -18,6 +18,17 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
+
+/**
+ * ESM-safe replacement for the CommonJS `__dirname`. Our package declares
+ * `"type": "module"` so the compiled dist runs in ESM mode — Node's ESM
+ * loader does NOT define `__dirname` (a bare reference throws
+ * ReferenceError). Bun does polyfill it, which is why earlier smoke runs
+ * appeared healthy; pure-Node consumers (and the npm install path) need
+ * this `import.meta.url`-based fallback.
+ */
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 import type { PluginInput, Hooks } from '@opencode-ai/plugin';
 import type { Auth } from '@opencode-ai/sdk';
 
@@ -311,14 +322,17 @@ function createStreamingResponse(
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
             firstChunkSent = true;
           } else if (ev.kind === 'tool_call_args') {
-            // Route the args to the LAST started tool-call's index. The
-            // cloud always pairs args with the most recent start event in
-            // its current stream, but if a future model interleaves args
-            // across calls the id-based map (toolIdToIndex) is what we'd
-            // key on. lastToolCallId tracks the current target.
-            const idx = lastToolCallId !== undefined
-              ? (toolIdToIndex.get(lastToolCallId) ?? Math.max(0, toolCallIndex))
-              : Math.max(0, toolCallIndex);
+            // Defensive: if the cloud ever emits an arguments_delta WITHOUT
+            // a preceding tool_call_start (id+name), we have no valid call
+            // index to attribute the args to. Previously this produced a
+            // phantom delta at index 0 with no name, which @ai-sdk's
+            // parser renders as a tool call with undefined name. Drop
+            // orphan args instead of inventing a fake call.
+            if (lastToolCallId === undefined || toolCallIndex < 0) {
+              debugLog.log('[windsurf-plugin] dropping orphan tool_call_args (no preceding tool_call_start)');
+              continue;
+            }
+            const idx = toolIdToIndex.get(lastToolCallId) ?? toolCallIndex;
             const chunk = {
               id: responseId,
               object: 'chat.completion.chunk' as const,
@@ -625,9 +639,9 @@ const PLUGIN_VERSION: string = (() => {
   // __dirname differs between dev (src/) and dist/ (dist/src/),
   // and installed packages place package.json at varying relative depths.
   const candidates = [
-    path.join(__dirname, '..', '..', 'package.json'),       // src/plugin.ts → repo root
-    path.join(__dirname, '..', '..', '..', 'package.json'), // dist/src/plugin.js → package root
-    path.join(__dirname, '..', 'package.json'),             // edge: tsc output alongside
+    path.join(MODULE_DIR, '..', '..', 'package.json'),       // src/plugin.ts → repo root
+    path.join(MODULE_DIR, '..', '..', '..', 'package.json'), // dist/src/plugin.js → package root
+    path.join(MODULE_DIR, '..', 'package.json'),             // edge: tsc output alongside
   ];
   for (const p of candidates) {
     try {
@@ -699,12 +713,24 @@ function authorizeProxyRequest(req: Request): Response | null {
     return openAIError(401, 'Unauthorized: missing or malformed Authorization header.');
   }
   const presented = authHeader.slice('Bearer '.length);
+  // Encode to bytes ONCE. `string.length` returns UTF-16 code-unit count;
+  // `Buffer.from(str)` returns the UTF-8 byte representation. A bearer
+  // made of 32 emoji has .length===64 (would match a 64-char hex secret
+  // by code-unit count) but Buffer.from yields 128 bytes; passing
+  // mismatched-length buffers to crypto.timingSafeEqual throws
+  // RangeError, which previously escaped as a 500 instead of the
+  // intended 401. Comparing byte lengths first fixes both correctness
+  // and the auth-gate fail-open shape.
+  const presentedBuf = Buffer.from(presented, 'utf8');
 
   // Accept the per-process secret first (cheapest check).
-  const matchesSecret =
-    presented.length === PROXY_SECRET.length &&
-    crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(PROXY_SECRET));
-  if (matchesSecret) return null;
+  const secretBuf = Buffer.from(PROXY_SECRET, 'utf8');
+  if (
+    presentedBuf.length === secretBuf.length &&
+    crypto.timingSafeEqual(presentedBuf, secretBuf)
+  ) {
+    return null;
+  }
 
   // Otherwise, check the persisted credentials. We load lazily so a
   // missing/corrupt file just fails this branch (the caller then sees
@@ -712,9 +738,10 @@ function authorizeProxyRequest(req: Request): Response | null {
   try {
     const creds = loadOAuthCredentials();
     if (creds && typeof creds.apiKey === 'string' && creds.apiKey.length > 0) {
+      const credBuf = Buffer.from(creds.apiKey, 'utf8');
       if (
-        presented.length === creds.apiKey.length &&
-        crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(creds.apiKey))
+        presentedBuf.length === credBuf.length &&
+        crypto.timingSafeEqual(presentedBuf, credBuf)
       ) {
         return null;
       }
@@ -872,9 +899,22 @@ async function ensureWindsurfProxyServer(): Promise<string> {
                 // Tighten parent dir + file mode to 0700 / 0600 so the
                 // dumped tool schemas (which can include user file paths
                 // in descriptions) aren't world-readable on shared hosts.
+                // O_EXCL+O_NOFOLLOW on the write so a pre-planted symlink
+                // can't redirect us elsewhere (same hardening as
+                // saveCredentials).
                 fs.mkdirSync(path.dirname(dumpPath), { recursive: true, mode: 0o700 });
-                fs.writeFileSync(dumpPath, JSON.stringify(requestBody.tools, null, 2), { mode: 0o600 });
-                try { fs.chmodSync(dumpPath, 0o600); } catch { /* ok */ }
+                try { fs.unlinkSync(dumpPath); } catch { /* not there, fine */ }
+                const noFollow = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+                const fd = fs.openSync(
+                  dumpPath,
+                  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+                  0o600,
+                );
+                try {
+                  fs.writeSync(fd, JSON.stringify(requestBody.tools, null, 2));
+                } finally {
+                  fs.closeSync(fd);
+                }
                 debugLog.log(`  full tools dumped to ${dumpPath}`);
               } catch (e) {
                 debugLog.log(`  tools dump failed: ${(e as Error).message}`);
@@ -980,6 +1020,12 @@ async function ensureWindsurfProxyServer(): Promise<string> {
                   total += buf.length;
                   if (total > MAX_REQ_BODY_BYTES) {
                     aborted = true;
+                    // Actively destroy the request socket so the attacker
+                    // can't keep streaming bytes we just ignore. Without
+                    // this, the previous "set aborted=true and return"
+                    // path let the client hold the connection open and
+                    // pour data through until the OS-level idle timeout.
+                    try { req.destroy(new Error('request body exceeded cap')); } catch { /* */ }
                     rej(Object.assign(new Error('request body too large'), { httpStatus: 413 }));
                     return;
                   }
@@ -1261,10 +1307,23 @@ export const createWindsurfPlugin =
                         ? `${err.name}: ${err.message}\n${err.stack ?? ''}`
                         : String(err);
                     try {
-                      fs.writeFileSync(
+                      // 0600 + O_NOFOLLOW so a pre-planted symlink can't
+                      // redirect the log elsewhere and the file isn't
+                      // world-readable on shared hosts. Use openSync so
+                      // we control the mode; writeFileSync's default
+                      // mode is 0666 & ~umask (typically 0644).
+                      try { fs.unlinkSync(errLogPath); } catch { /* not there, fine */ }
+                      const noFollow = (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+                      const fd = fs.openSync(
                         errLogPath,
-                        `[${new Date().toISOString()}] stage=${stage}\n${detail}\n`,
+                        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+                        0o600,
                       );
+                      try {
+                        fs.writeSync(fd, `[${new Date().toISOString()}] stage=${stage}\n${detail}\n`);
+                      } finally {
+                        fs.closeSync(fd);
+                      }
                     } catch { /* ok */ }
                   };
 

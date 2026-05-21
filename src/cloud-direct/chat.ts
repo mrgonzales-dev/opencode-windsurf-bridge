@@ -45,6 +45,32 @@ const CLOUD_STREAM_IDLE_MS = 120_000;
 const CLOUD_STREAM_TTFB_MS = 60_000;
 
 /**
+ * Compose multiple AbortSignals into a single signal that aborts when ANY
+ * input aborts. Uses `AbortSignal.any` when available (Node ≥20.3 / Bun
+ * ≥1.0); falls back to a manual implementation for older runtimes that
+ * are still in our `engines` range (Node 18.x and early 20.x). The
+ * previous `req.signal ?? ttfbSignal` fallback silently picked one signal
+ * and dropped the other, defeating either the caller's cancel or the
+ * internal timeout.
+ */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  const builtin = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof builtin === 'function') return builtin(signals);
+  const controller = new AbortController();
+  const onAbort = (reason: unknown): void => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  for (const s of signals) {
+    if (s.aborted) {
+      onAbort(s.reason);
+      break;
+    }
+    s.addEventListener('abort', () => onAbort(s.reason), { once: true });
+  }
+  return controller.signal;
+}
+
+/**
  * Per-(apiKey, host) session/cascade ID cache. Cloud uses these for
  * server-side context caching across turns of the same conversation; if we
  * mint a fresh sessionId on every call (which we used to), every turn looks
@@ -764,10 +790,12 @@ export async function* streamChatEvents(req: CloudChatRequest): AsyncGenerator<C
   const ttfbController = new AbortController();
   const ttfbTimer = setTimeout(() => ttfbController.abort(new Error(`cloud-direct: time-to-first-byte timeout (${CLOUD_STREAM_TTFB_MS}ms)`)), CLOUD_STREAM_TTFB_MS);
   const ttfbSignal = ttfbController.signal;
-  const anyFn = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-  const initialSignal: AbortSignal = req.signal && typeof anyFn === 'function'
-    ? anyFn([req.signal, ttfbSignal])
-    : (req.signal ?? ttfbSignal);
+  // Compose req.signal + ttfbSignal. AbortSignal.any was added in Node
+  // 20.3 / Bun 1.0; our `engines` allows Node ≥18, so on Node 18-20.2 the
+  // built-in is missing. The previous fallback `req.signal ?? ttfbSignal`
+  // silently discarded one of the two signals (TTFB if caller passed
+  // one), defeating the timeout guard. anySignal() is a real polyfill.
+  const initialSignal: AbortSignal = req.signal ? anySignal([req.signal, ttfbSignal]) : ttfbSignal;
 
   let resp: Response;
   try {
@@ -928,7 +956,13 @@ export async function* streamChatEvents(req: CloudChatRequest): AsyncGenerator<C
     // throw (idle timeout, gunzip error, trailer error, etc), keeping
     // the process from exiting promptly.
     if (idleTimer) clearTimeout(idleTimer);
+    // Cancel the underlying body stream on any non-clean exit so the TCP
+    // connection is released. `releaseLock` alone leaves the body in a
+    // dangling state; we have to call `cancel` on the response body
+    // itself (cancel-via-reader requires holding the lock). Fire and
+    // forget — there's nothing meaningful to do if cancel rejects.
     try { reader.releaseLock(); } catch { /* */ }
+    try { void resp.body?.cancel(); } catch { /* */ }
   }
 
   if (trailerError) {

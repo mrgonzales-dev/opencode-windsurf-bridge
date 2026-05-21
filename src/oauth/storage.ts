@@ -1,10 +1,12 @@
 /**
  * On-disk credential storage for the OAuth flow.
  *
- * Path: `$XDG_CONFIG_HOME/opencode-windsurf-auth/credentials.json`
- *       (defaults to `~/.config/opencode-windsurf-auth/credentials.json` on Linux,
- *        `~/Library/Application Support/opencode-windsurf-auth/credentials.json` on macOS
- *        — xdg-basedir resolves both).
+ * Path: `$XDG_CONFIG_HOME/opencode-windsurf-auth/credentials.json` —
+ * verified that on the actual `xdg-basedir` package, `xdgConfig` resolves
+ * to `~/.config/opencode-windsurf-auth` on Linux AND macOS (the package
+ * doesn't follow the Cocoa "Library/Application Support" convention even
+ * on macOS). Windows falls through to `~/.config` via our manual fallback
+ * since xdgConfig is undefined there.
  *
  * We deliberately store on disk (mode 0600) rather than in the OS keychain
  * because:
