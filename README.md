@@ -10,28 +10,23 @@ Opencode plugin that registers Windsurf/Cognition as a model provider. Sign in w
 ## Features
 
 - **`opencode auth login` integration** — Cognition (Windsurf) shows up as a provider in opencode's native auth picker; browser-based sign-in via loopback callback (just like Google/GitHub providers)
-- **Cloud-direct streaming** — talks to `server.codeium.com` over HTTPS; **no local `language_server`, no Windsurf.app dependency**
+- **Cloud-direct streaming, no install required** — talks to `server.codeium.com` over HTTPS; **no local `language_server`, no Windsurf dependency**
 - **OpenAI-compatible `/v1/chat/completions` proxy** — full streaming SSE per spec (delta.role on first chunk, delta.content/reasoning/tool_calls, separate finish + usage chunks, `data: [DONE]`)
-- **Reasoning split from content** — Cascade's CoT lands on `delta.reasoning` so opencode renders it in a collapsed block; the visible answer lands on `delta.content`
-- **MCP tools + full system prompt** — opencode hands every tool, every MCP server, the entire 100KB system prompt to the cloud, identical to any other provider
+- **MCP tools + full system prompt** — opencode hands every tool, every MCP server, the entire system prompt to the cloud, identical to any other provider
 - **Multimodal** — text + image content parts
 - **Tenant-aware** — honors `apiServerUrl` from RegisterUser (self-serve, EU, FedRAMP, enterprise portals)
 
 ## Overview
 
-Sign in once via opencode's native auth flow; opencode invokes our `authorize()` hook which opens `windsurf.com/windsurf/signin`, captures the token on a loopback callback, exchanges it via `register.windsurf.com/RegisterUser` for a long-lived api_key, and writes both opencode's `~/.local/share/opencode/auth.json` AND our `~/.config/opencode-windsurf-auth/credentials.json` (with a `syncedViaOpencodeAuth: true` marker so `opencode auth logout windsurf` mirror-clears both).
-
-Each chat completion flows: opencode → our local proxy on `127.0.0.1:42100` (via `chat.params` baseURL injection) → Connect-RPC stream to `server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage` → response decoded frame-by-frame and re-emitted as OpenAI SSE.
-
-The wire-protocol details, tool-description size cap, system→user message collapse, and finish_reason mapping are all documented in [docs/CLOUD_DIRECT.md](docs/CLOUD_DIRECT.md).
+This plugin enables Opencode users to access Windsurf models by leveraging their existing Windsurf subscription. It communicates directly with the Cognition cloud API, no local Windsurf installation required.
 
 ## Prerequisites
 
 - An opencode install (this plugin loads via opencode's plugin system)
-- A Windsurf/Cognition account at [windsurf.com](https://windsurf.com) — free tier works for `swe-1.6` and `kimi-k2.6`; other models require a paid plan
+- A Windsurf account at [windsurf.com](https://windsurf.com)
 - Bun (opencode's runtime)
 
-You do **not** need Windsurf.app installed.
+You do **NOT** need Windsurf installed.
 
 ## Installation
 
@@ -79,14 +74,14 @@ The plugin starts a local proxy on `127.0.0.1:42100` (random free port on fallba
   "plugin": ["opencode-windsurf-auth@beta"],
   "provider": {
     "windsurf": {
-      "name": "Cognition (Windsurf)",
+      "name": "Cognition",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "http://127.0.0.1:42100/v1"
       },
       "models": {
         "claude-opus-4.7": {
-          "name": "Claude Opus 4.7 (Windsurf)",
+          "name": "Claude Opus 4.7",
           "limit": { "context": 1000000, "output": 128000 },
           "variants": {
             "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
@@ -94,7 +89,7 @@ The plugin starts a local proxy on `127.0.0.1:42100` (random free port on fallba
           }
         },
         "gpt-5.5": {
-          "name": "GPT 5.5 (Windsurf)",
+          "name": "GPT 5.5",
           "limit": { "context": 1050000, "output": 128000 },
           "variants": {
             "none": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {},
@@ -102,20 +97,20 @@ The plugin starts a local proxy on `127.0.0.1:42100` (random free port on fallba
           }
         },
         "deepseek-v4": {
-          "name": "DeepSeek V4 (Windsurf)",
+          "name": "DeepSeek V4",
           "limit": { "context": 1000000, "output": 384000 }
         },
         "kimi-k2.6": {
-          "name": "Kimi K2.6 (Windsurf)",
+          "name": "Kimi K2.6",
           "limit": { "context": 262144, "output": 262144 }
         },
         "gemini-3.5-flash": {
-          "name": "Gemini 3.5 Flash (Windsurf)",
+          "name": "Gemini 3.5 Flash",
           "limit": { "context": 1048576, "output": 65536 },
           "variants": { "minimal": {}, "low": {}, "medium": {}, "high": {} }
         },
         "claude-opus-4.6": {
-          "name": "Claude Opus 4.6 (Windsurf)",
+          "name": "Claude Opus 4.6",
           "limit": { "context": 1000000, "output": 128000 },
           "variants": {
             "thinking": {}, "1m": {}, "thinking-1m": {}, "fast": {}, "thinking-fast": {}
@@ -132,7 +127,7 @@ After saving the config:
 ```bash
 opencode models windsurf                                       # confirm models appear under windsurf/
 opencode run --model=windsurf/swe-1.6 "hi"                     # free-tier smoke test
-opencode run --model=windsurf/claude-opus-4.7:high "Refactor X" # paid models
+opencode run --model=windsurf/claude-opus-4.7:high "hi"        # paid models
 ```
 
 ## Project Layout
@@ -168,45 +163,35 @@ src/
 4. **Tool calling**: every opencode tool + MCP server tool reaches the cloud; tool execution stays opencode-side. The cloud returns `STOP_REASON_FUNCTION_CALL` (`10`) when it wants a tool invoked.
 5. **Usage**: input/output token counts surface as a separate `{choices: [], usage: {…}}` chunk before `data: [DONE]`, per OpenAI's `stream_options.include_usage: true` convention.
 
-### Supported Models (canonical names)
+### Supported Models
 
-**Claude**: `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3.7-sonnet`, `claude-3.7-sonnet-thinking`, `claude-4-opus`, `claude-4-opus-thinking`, `claude-4-sonnet`, `claude-4-sonnet-thinking`, `claude-4.1-opus`, `claude-4.1-opus-thinking`, `claude-4.5-sonnet`, `claude-4.5-sonnet-thinking`, `claude-4.5-opus`, `claude-4.5-opus-thinking`, `claude-code`.
+Addressed as `windsurf/<name>` (or `windsurf/<name>:<variant>`). Grouped by vendor, newest-first within each group:
 
-**OpenAI GPT**: `gpt-4`, `gpt-4-turbo`, `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-5`, `gpt-5-nano`, `gpt-5-codex`, `gpt-5.1-codex-mini`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.2` (variants low/medium/high/xhigh + priority tiers). Non-thinking vs thinking are separate model IDs, not variants.
+**Anthropic** — `claude-opus-4.7` (variants `low`/`medium`/`high`/`xhigh`/`max` plus their `-fast` priority-routing twins, 10 total), `claude-opus-4.6` (`thinking`, `1m`, `thinking-1m`, `fast`, `thinking-fast`), `claude-opus-4.5` (+`thinking`), `claude-sonnet-4.6` (`thinking`, `1m`, `thinking-1m`), `claude-sonnet-4.5`, `claude-4.5-opus` (+`thinking`), `claude-4.5-sonnet` (+`thinking`), `claude-4.1-opus` (+`thinking`), `claude-4-opus` (+`thinking`), `claude-4-sonnet` (+`thinking`), `claude-3.7-sonnet` (+`thinking`), `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku`, `claude-code`.
 
-**OpenAI O-series**: `o3`, `o3-mini`, `o3-low`, `o3-high`, `o3-pro`, `o3-pro-low`, `o3-pro-high`, `o4-mini`, `o4-mini-low`, `o4-mini-high`.
+**OpenAI** — `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`, `gpt-5.2-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5-codex`, `gpt-5` (variants `low`/`high`/`nano`), `gpt-4.1` (+`mini`, +`nano`), `gpt-4o` (+`mini`), `gpt-4-turbo`, `gpt-4`, `o4-mini` (+`low`/`high`), `o3-pro` (+`low`/`high`), `o3` (+`low`/`high`), `o3-mini`, `gpt-oss-120b`. Reasoning models expose tiers as variants (`low`/`medium`/`high`/`xhigh`, sometimes `none`, plus `-priority` twins).
 
-**Gemini**: `gemini-2.0-flash`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-thinking`, `gemini-2.5-flash-lite`, `gemini-3.0-pro` (variants: `minimal`, `low`, `medium`, `high`), `gemini-3.0-flash` (variants: `minimal`, `low`, `medium`, `high`). Thinking versions of Gemini 2.5 are separate models.
+**Google** — `gemini-3.5-flash` (`minimal`/`low`/`medium`/`high`), `gemini-3.1-pro` (`low`/`high`), `gemini-3.0-pro` (`minimal`/`low`/`medium`/`high`), `gemini-3.0-flash` (`minimal`/`low`/`medium`/`high`), `gemini-2.5-pro`, `gemini-2.5-flash` (+`thinking`, +`lite`), `gemini-2.0-flash`.
 
-**DeepSeek**: `deepseek-v3`, `deepseek-v3-2`, `deepseek-r1`, `deepseek-r1-fast`, `deepseek-r1-slow`.
+**DeepSeek** — `deepseek-v4`, `deepseek-v3-2`, `deepseek-v3`, `deepseek-r1` (+`fast`, +`slow`).
 
-**Llama**: `llama-3.1-8b`, `llama-3.1-70b`, `llama-3.1-405b`, `llama-3.3-70b`, `llama-3.3-70b-r1`.
+**z.ai** — `glm-5.1`, `glm-4.7` (+`fast`), `glm-4.6` (+`fast`), `glm-4.5` (+`fast`).
 
-**Qwen**: `qwen-2.5-7b`, `qwen-2.5-32b`, `qwen-2.5-72b`, `qwen-2.5-32b-r1`, `qwen-3-235b`, `qwen-3-coder-480b`, `qwen-3-coder-480b-fast`.
+**Moonshot** — `kimi-k2.6`, `kimi-k2.5`, `kimi-k2-thinking`, `kimi-k2`.
 
-**Grok (xAI)**: `grok-2`, `grok-3`, `grok-3-mini`, `grok-code-fast`.
+**MiniMax** — `minimax-m2.5`, `minimax-m2.1`, `minimax-m2`.
 
-**Specialty & Proprietary**: `mistral-7b`, `kimi-k2`, `kimi-k2-thinking`, `kimi-k2.5`, `kimi-k2.6`, `glm-4.5`, `glm-4.5-fast`, `glm-4.6`, `glm-4.6-fast`, `glm-4.7`, `glm-4.7-fast`, `glm-5.1`, `minimax-m2`, `minimax-m2.1`, `minimax-m2.5`, `swe-1.5`, `swe-1.5-thinking`, `swe-1.5-slow`, `swe-1.6` (variants: `fast`), `gpt-oss-120b`, `gpt-5.2-codex` (`low`/`medium`/`high`/`xhigh` + `-priority` tiers), `deepseek-v4`.
+**xAI** — `grok-3` (+`mini`), `grok-2`, `grok-code-fast`.
 
-### Cognition-era string-UID models
+**Meta** — `llama-3.3-70b` (+`r1`), `llama-3.1-405b`, `llama-3.1-70b`, `llama-3.1-8b`.
 
-Windsurf 2.x has shifted away from numeric proto-enum identifiers toward string `model_uid`s the server publishes via `GetUserStatus`. These models have no entry in the bundled `extension.js` proto enum, so the only way to enumerate them is to query the running language_server (see [docs/CASCADE_PROTOCOL.md](docs/CASCADE_PROTOCOL.md) §3 for the protocol).
+**Alibaba** — `qwen-3-coder-480b` (+`fast`), `qwen-3-235b`, `qwen-2.5-72b`, `qwen-2.5-32b` (+`r1`), `qwen-2.5-7b`.
 
-The plugin maps them to canonical names you can use in OpenCode config:
+**Mistral** — `mistral-7b`.
 
-- **Claude Opus 4.7** — `claude-opus-4.7` with variants `low`/`medium`/`high`/`xhigh`/`max` and `*-fast` priority-routing twins (10 total).
-- **Claude Opus 4.6** — `claude-opus-4.6` with variants `thinking`, `1m`, `thinking-1m`, `fast`, `thinking-fast`.
-- **Claude Sonnet 4.6** — `claude-sonnet-4.6` with `thinking`, `1m`, `thinking-1m`.
-- **Gemini 3.5 Flash** — `gemini-3.5-flash` with `minimal`/`low`/`medium`/`high`.
-- **Gemini 3.1 Pro** — `gemini-3.1-pro` with `low`/`high`.
-- **GPT-5.4** — `gpt-5.4` with `none`/`low`/`medium`/`high`/`xhigh` + `-priority` twins.
-- **GPT-5.4 Mini** — `gpt-5.4-mini` with `low`/`medium`/`high`/`xhigh`.
-- **GPT-5.5** — `gpt-5.5` with the same shape as 5.4.
-- **GPT-5.3 Codex** — `gpt-5.3-codex` with `low`/`medium`/`high`/`xhigh` + `-priority` twins.
+**Cognition / Windsurf** — `swe-1.6` (+`fast`), `swe-1.5` (+`thinking`, +`slow`).
 
-The available list **varies per account**. Call `GET http://127.0.0.1:42100/v1/models` once the plugin is loaded to see what's advertised for you specifically.
-
-Aliases (e.g., `gpt-5.2-low-priority`) are also accepted. Variants live under `provider.windsurf.models[model].variants`; thinking/non-thinking are distinct models.
+The list **varies per account** — call `GET http://127.0.0.1:42100/v1/models` once the plugin is loaded to see what your plan exposes. Variants are addressable two ways: `windsurf/claude-opus-4.7:high` (colon form, preferred) or `windsurf/claude-opus-4-7-high` (dash form, accepted as alias). Declare them under `provider.windsurf.models[model].variants` in your opencode config — see `opencode_config_example.json`.
 
 ## Development
 
