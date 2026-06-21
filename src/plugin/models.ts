@@ -65,10 +65,6 @@ const ENUM_VALUE_TO_NAME: Map<number, string> = (() => {
   return map;
 })();
 
-export function enumNameForValue(value: ModelEnumValue): string {
-  return ENUM_VALUE_TO_NAME.get(value as number) ?? 'MODEL_UNSPECIFIED';
-}
-
 // ==========================================================================
 // Variant-aware catalog
 // ==========================================================================
@@ -1117,54 +1113,6 @@ function enumNameForValueOrFail(v: ModelEnumValue): string {
  * proto enum — calling this for them is a programming error. Use
  * `resolveModel(name).modelUid` instead, which works uniformly.
  */
-export function modelNameToEnum(modelName: string, variantOverride?: string): ModelEnumValue {
-  const resolved = resolveModel(modelName, variantOverride);
-  if (resolved.enumValue === undefined) {
-    throw new Error(
-      `Model "${modelName}" has no proto enum value (string-UID model "${resolved.modelUid}"). ` +
-        `Use resolveModel(name).modelUid instead of modelNameToEnum().`
-    );
-  }
-  return resolved.enumValue;
-}
-
-// `enumToModelName` removed: was unused after the Cascade flow switch, and
-// the previous silent-fallback-to-claude-3.5-sonnet was a footgun. If a
-// future caller needs the reverse lookup, read from ENUM_TO_MODEL_NAME
-// directly so the `undefined` case is impossible to ignore.
-
-/**
- * Get all supported model names (includes legacy aliases)
- */
-export function getSupportedModels(): string[] {
-  const fromVariants = Object.keys(VARIANT_CATALOG);
-  const aliases: string[] = [];
-  for (const entry of Object.values(VARIANT_CATALOG)) {
-    if (entry.aliases) aliases.push(...entry.aliases);
-    if (entry.variants) {
-      for (const variantKey of Object.keys(entry.variants)) {
-        aliases.push(`${entry.id}-${variantKey}`);
-        for (const alias of entry.aliases || []) {
-          aliases.push(`${alias}-${variantKey}`);
-        }
-      }
-    }
-  }
-  return Array.from(new Set([...fromVariants, ...aliases, ...Object.keys(MODEL_NAME_TO_ENUM)]));
-}
-
-/**
- * Check if a model name is supported (canonical or alias or variant)
- */
-export function isModelSupported(modelName: string): boolean {
-  const normalized = normalizeModelId(modelName);
-  const { base, variant } = splitModelAndVariant(normalized);
-  const baseId = ALIAS_TO_ID[base] || base;
-  if (variant && VARIANT_CATALOG[baseId]?.variants?.[variant]) return true;
-  if (VARIANT_CATALOG[baseId]) return true;
-  return normalized in MODEL_NAME_TO_ENUM;
-}
-
 /** Default canonical model */
 /**
  * Default model returned by `getDefaultModel()`. The catalog snapshot
@@ -1179,10 +1127,6 @@ const DEFAULT_MODEL_ID = 'swe-1.6';
 
 export function getDefaultModel(): string {
   return DEFAULT_MODEL_ID;
-}
-
-export function getDefaultModelEnum(): ModelEnumValue {
-  return ModelEnum.CLAUDE_3_5_SONNET_20241022;
 }
 
 /**
